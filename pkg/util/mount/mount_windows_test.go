@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -126,7 +127,7 @@ func TestGetMountRefs(t *testing.T) {
 		}
 	}
 
-	if refs, err := GetMountRefs(fm, mountPath); err != nil || !setEquivalent(expectedRefs, refs) {
+	if refs, err := fm.GetMountRefs(mountPath); err != nil || !setEquivalent(expectedRefs, refs) {
 		t.Errorf("getMountRefs(%q) = %v, error: %v; expected %v", mountPath, refs, err, expectedRefs)
 	}
 
@@ -717,6 +718,78 @@ func TestIsLikelyNotMountPoint(t *testing.T) {
 			assert.NotNil(t, err, "Expect error during IsLikelyNotMountPoint(%s)", filePath)
 		} else {
 			assert.Nil(t, err, "Expect error is nil during IsLikelyNotMountPoint(%s)", filePath)
+		}
+	}
+}
+
+func TestFormatAndMount(t *testing.T) {
+	fakeMounter := ErrorMounter{&FakeMounter{}, 0, nil}
+	execCallback := func(cmd string, args ...string) ([]byte, error) {
+		for j := range args {
+			if strings.Contains(args[j], "Get-Disk -Number") {
+				return []byte("0"), nil
+			}
+
+			if strings.Contains(args[j], "Get-Partition -DiskNumber") {
+				return []byte("0"), nil
+			}
+
+			if strings.Contains(args[j], "mklink") {
+				return nil, nil
+			}
+		}
+		return nil, fmt.Errorf("Unexpected cmd %s, args %v", cmd, args)
+	}
+	fakeExec := NewFakeExec(execCallback)
+
+	mounter := SafeFormatAndMount{
+		Interface: &fakeMounter,
+		Exec:      fakeExec,
+	}
+
+	tests := []struct {
+		device       string
+		target       string
+		fstype       string
+		mountOptions []string
+		expectError  bool
+	}{
+		{
+			"0",
+			"disk",
+			"NTFS",
+			[]string{},
+			false,
+		},
+		{
+			"0",
+			"disk",
+			"",
+			[]string{},
+			false,
+		},
+		{
+			"invalidDevice",
+			"disk",
+			"NTFS",
+			[]string{},
+			true,
+		},
+	}
+
+	for _, test := range tests {
+		base, err := ioutil.TempDir("", test.device)
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
+		defer os.RemoveAll(base)
+
+		target := filepath.Join(base, test.target)
+		err = mounter.FormatAndMount(test.device, target, test.fstype, test.mountOptions)
+		if test.expectError {
+			assert.NotNil(t, err, "Expect error during FormatAndMount(%s, %s, %s, %v)", test.device, test.target, test.fstype, test.mountOptions)
+		} else {
+			assert.Nil(t, err, "Expect error is nil during FormatAndMount(%s, %s, %s, %v)", test.device, test.target, test.fstype, test.mountOptions)
 		}
 	}
 }

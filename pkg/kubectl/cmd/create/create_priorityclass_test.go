@@ -38,7 +38,7 @@ func TestCreatePriorityClass(t *testing.T) {
 	ns := legacyscheme.Codecs
 
 	tf.Client = &fake.RESTClient{
-		GroupVersion:         schema.GroupVersion{Group: "scheduling.k8s.io", Version: "v1alpha1"},
+		GroupVersion:         schema.GroupVersion{Group: "scheduling.k8s.io", Version: "v1beta1"},
 		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -59,7 +59,7 @@ func TestCreatePriorityClass(t *testing.T) {
 	cmd.Flags().Set("dry-run", "true")
 	cmd.Flags().Set("output", outputFormat)
 
-	printFlags := NewPrintFlags("created", legacyscheme.Scheme)
+	printFlags := genericclioptions.NewPrintFlags("created").WithTypeSetter(legacyscheme.Scheme)
 	printFlags.OutputFormat = &outputFormat
 
 	options := &PriorityClassOpts{

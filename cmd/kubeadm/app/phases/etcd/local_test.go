@@ -32,7 +32,7 @@ import (
 func TestGetEtcdPodSpec(t *testing.T) {
 
 	// Creates a Master Configuration
-	cfg := &kubeadmapi.MasterConfiguration{
+	cfg := &kubeadmapi.InitConfiguration{
 		KubernetesVersion: "v1.7.0",
 		Etcd: kubeadmapi.Etcd{
 			Local: &kubeadmapi.LocalEtcd{
@@ -58,7 +58,7 @@ func TestCreateLocalEtcdStaticPodManifestFile(t *testing.T) {
 	defer os.RemoveAll(tmpdir)
 
 	// Creates a Master Configuration
-	cfg := &kubeadmapi.MasterConfiguration{
+	cfg := &kubeadmapi.InitConfiguration{
 		KubernetesVersion: "v1.7.0",
 		Etcd: kubeadmapi.Etcd{
 			Local: &kubeadmapi.LocalEtcd{
@@ -82,17 +82,27 @@ func TestCreateLocalEtcdStaticPodManifestFile(t *testing.T) {
 
 func TestGetEtcdCommand(t *testing.T) {
 	var tests = []struct {
-		cfg      *kubeadmapi.MasterConfiguration
+		cfg      *kubeadmapi.InitConfiguration
 		expected []string
 	}{
 		{
-			cfg: &kubeadmapi.MasterConfiguration{
-				Etcd: kubeadmapi.Etcd{Local: &kubeadmapi.LocalEtcd{DataDir: "/var/lib/etcd"}},
+			cfg: &kubeadmapi.InitConfiguration{
+				NodeRegistration: kubeadmapi.NodeRegistrationOptions{
+					Name: "foo",
+				},
+				Etcd: kubeadmapi.Etcd{
+					Local: &kubeadmapi.LocalEtcd{
+						DataDir: "/var/lib/etcd",
+					},
+				},
 			},
 			expected: []string{
 				"etcd",
+				"--name=foo",
 				"--listen-client-urls=https://127.0.0.1:2379",
 				"--advertise-client-urls=https://127.0.0.1:2379",
+				"--listen-peer-urls=https://127.0.0.1:2380",
+				"--initial-advertise-peer-urls=https://127.0.0.1:2380",
 				"--data-dir=/var/lib/etcd",
 				"--cert-file=" + kubeadmconstants.EtcdServerCertName,
 				"--key-file=" + kubeadmconstants.EtcdServerKeyName,
@@ -103,10 +113,14 @@ func TestGetEtcdCommand(t *testing.T) {
 				"--peer-trusted-ca-file=" + kubeadmconstants.EtcdCACertName,
 				"--snapshot-count=10000",
 				"--peer-client-cert-auth=true",
+				"--initial-cluster=foo=https://127.0.0.1:2380",
 			},
 		},
 		{
-			cfg: &kubeadmapi.MasterConfiguration{
+			cfg: &kubeadmapi.InitConfiguration{
+				NodeRegistration: kubeadmapi.NodeRegistrationOptions{
+					Name: "bar",
+				},
 				Etcd: kubeadmapi.Etcd{
 					Local: &kubeadmapi.LocalEtcd{
 						DataDir: "/var/lib/etcd",
@@ -119,8 +133,11 @@ func TestGetEtcdCommand(t *testing.T) {
 			},
 			expected: []string{
 				"etcd",
+				"--name=bar",
 				"--listen-client-urls=https://10.0.1.10:2379",
 				"--advertise-client-urls=https://10.0.1.10:2379",
+				"--listen-peer-urls=https://127.0.0.1:2380",
+				"--initial-advertise-peer-urls=https://127.0.0.1:2380",
 				"--data-dir=/var/lib/etcd",
 				"--cert-file=" + kubeadmconstants.EtcdServerCertName,
 				"--key-file=" + kubeadmconstants.EtcdServerKeyName,
@@ -131,16 +148,27 @@ func TestGetEtcdCommand(t *testing.T) {
 				"--peer-trusted-ca-file=" + kubeadmconstants.EtcdCACertName,
 				"--snapshot-count=10000",
 				"--peer-client-cert-auth=true",
+				"--initial-cluster=bar=https://127.0.0.1:2380",
 			},
 		},
 		{
-			cfg: &kubeadmapi.MasterConfiguration{
-				Etcd: kubeadmapi.Etcd{Local: &kubeadmapi.LocalEtcd{DataDir: "/etc/foo"}},
+			cfg: &kubeadmapi.InitConfiguration{
+				NodeRegistration: kubeadmapi.NodeRegistrationOptions{
+					Name: "wombat",
+				},
+				Etcd: kubeadmapi.Etcd{
+					Local: &kubeadmapi.LocalEtcd{
+						DataDir: "/etc/foo",
+					},
+				},
 			},
 			expected: []string{
 				"etcd",
+				"--name=wombat",
 				"--listen-client-urls=https://127.0.0.1:2379",
 				"--advertise-client-urls=https://127.0.0.1:2379",
+				"--listen-peer-urls=https://127.0.0.1:2380",
+				"--initial-advertise-peer-urls=https://127.0.0.1:2380",
 				"--data-dir=/etc/foo",
 				"--cert-file=" + kubeadmconstants.EtcdServerCertName,
 				"--key-file=" + kubeadmconstants.EtcdServerKeyName,
@@ -151,6 +179,7 @@ func TestGetEtcdCommand(t *testing.T) {
 				"--peer-trusted-ca-file=" + kubeadmconstants.EtcdCACertName,
 				"--snapshot-count=10000",
 				"--peer-client-cert-auth=true",
+				"--initial-cluster=wombat=https://127.0.0.1:2380",
 			},
 		},
 	}

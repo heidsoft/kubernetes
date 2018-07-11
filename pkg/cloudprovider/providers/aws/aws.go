@@ -220,6 +220,13 @@ const (
 	createTagFactor       = 2.0
 	createTagSteps        = 9
 
+	// encryptedCheck* is configuration of poll for created volume to check
+	// it has not been silently removed by AWS.
+	// On a random AWS account (shared among several developers) it took 4s on
+	// average.
+	encryptedCheckInterval = 1 * time.Second
+	encryptedCheckTimeout  = 30 * time.Second
+
 	// Number of node names that can be added to a filter. The AWS limit is 200
 	// but we are using a lower limit on purpose
 	filterNodeLimit = 150
@@ -429,7 +436,7 @@ type Volumes interface {
 	// Attach the disk to the node with the specified NodeName
 	// nodeName can be empty to mean "the instance on which we are running"
 	// Returns the device (e.g. /dev/xvdf) where we attached the volume
-	AttachDisk(diskName KubernetesVolumeID, nodeName types.NodeName, readOnly bool) (string, error)
+	AttachDisk(diskName KubernetesVolumeID, nodeName types.NodeName) (string, error)
 	// Detach the disk from the node with the specified NodeName
 	// nodeName can be empty to mean "the instance on which we are running"
 	// Returns the device where the volume was attached
@@ -1960,7 +1967,7 @@ func wrapAttachError(err error, disk *awsDisk, instance string) error {
 }
 
 // AttachDisk implements Volumes.AttachDisk
-func (c *Cloud) AttachDisk(diskName KubernetesVolumeID, nodeName types.NodeName, readOnly bool) (string, error) {
+func (c *Cloud) AttachDisk(diskName KubernetesVolumeID, nodeName types.NodeName) (string, error) {
 	disk, err := newAWSDisk(c, diskName)
 	if err != nil {
 		return "", err
@@ -1969,12 +1976,6 @@ func (c *Cloud) AttachDisk(diskName KubernetesVolumeID, nodeName types.NodeName,
 	awsInstance, info, err := c.getFullInstance(nodeName)
 	if err != nil {
 		return "", fmt.Errorf("error finding instance %s: %q", nodeName, err)
-	}
-
-	if readOnly {
-		// TODO: We could enforce this when we mount the volume (?)
-		// TODO: We could also snapshot the volume and attach copies of it
-		return "", errors.New("AWS volumes cannot be mounted read-only")
 	}
 
 	// mountDevice will hold the device where we should try to attach the disk
@@ -2133,13 +2134,13 @@ func (c *Cloud) DetachDisk(diskName KubernetesVolumeID, nodeName types.NodeName)
 
 // CreateDisk implements Volumes.CreateDisk
 func (c *Cloud) CreateDisk(volumeOptions *VolumeOptions) (KubernetesVolumeID, error) {
-	allZones, err := c.getCandidateZonesForDynamicVolume()
-	if err != nil {
-		return "", fmt.Errorf("error querying for all zones: %v", err)
-	}
-
 	var createAZ string
 	if !volumeOptions.ZonePresent && !volumeOptions.ZonesPresent {
+		// querry for candidate zones only if zone parameters absent
+		allZones, err := c.getCandidateZonesForDynamicVolume()
+		if err != nil {
+			return "", fmt.Errorf("error querying for all zones: %v", err)
+		}
 		createAZ = volumeutil.ChooseZoneForVolume(allZones, volumeOptions.PVCName)
 	}
 	if !volumeOptions.ZonePresent && volumeOptions.ZonesPresent {
@@ -2192,14 +2193,6 @@ func (c *Cloud) CreateDisk(volumeOptions *VolumeOptions) (KubernetesVolumeID, er
 	request.VolumeType = aws.String(createType)
 	request.Encrypted = aws.Bool(volumeOptions.Encrypted)
 	if len(volumeOptions.KmsKeyId) > 0 {
-		if missing, err := c.checkEncryptionKey(volumeOptions.KmsKeyId); err != nil {
-			if missing {
-				// KSM key is missing, provisioning would fail
-				return "", err
-			}
-			// Log checkEncryptionKey error and try provisioning anyway.
-			glog.Warningf("Cannot check KSM key %s: %v", volumeOptions.KmsKeyId, err)
-		}
 		request.KmsKeyId = aws.String(volumeOptions.KmsKeyId)
 		request.Encrypted = aws.Bool(true)
 	}
@@ -2228,24 +2221,50 @@ func (c *Cloud) CreateDisk(volumeOptions *VolumeOptions) (KubernetesVolumeID, er
 		return "", fmt.Errorf("error tagging volume %s: %q", volumeName, err)
 	}
 
+	// AWS has a bad habbit of reporting success when creating a volume with
+	// encryption keys that either don't exists or have wrong permissions.
+	// Such volume lives for couple of seconds and then it's silently deleted
+	// by AWS. There is no other check to ensure that given KMS key is correct,
+	// because Kubernetes may have limited permissions to the key.
+	if len(volumeOptions.KmsKeyId) > 0 {
+		err := c.waitUntilVolumeAvailable(volumeName)
+		if err != nil {
+			if isAWSErrorVolumeNotFound(err) {
+				err = fmt.Errorf("failed to create encrypted volume: the volume disappeared after creation, most likely due to inaccessible KMS encryption key")
+			}
+			return "", err
+		}
+	}
+
 	return volumeName, nil
 }
 
-// checkEncryptionKey tests that given encryption key exists.
-func (c *Cloud) checkEncryptionKey(keyId string) (missing bool, err error) {
-	input := &kms.DescribeKeyInput{
-		KeyId: aws.String(keyId),
+func (c *Cloud) waitUntilVolumeAvailable(volumeName KubernetesVolumeID) error {
+	disk, err := newAWSDisk(c, volumeName)
+	if err != nil {
+		// Unreachable code
+		return err
 	}
-	_, err = c.kms.DescribeKey(input)
-	if err == nil {
-		return false, nil
-	}
-	if awsError, ok := err.(awserr.Error); ok {
-		if awsError.Code() == "NotFoundException" {
-			return true, fmt.Errorf("KMS key %s not found: %q", keyId, err)
+
+	err = wait.Poll(encryptedCheckInterval, encryptedCheckTimeout, func() (done bool, err error) {
+		vol, err := disk.describeVolume()
+		if err != nil {
+			return true, err
 		}
-	}
-	return false, fmt.Errorf("Error checking KSM key %s: %q", keyId, err)
+		if vol.State != nil {
+			switch *vol.State {
+			case "available":
+				// The volume is Available, it won't be deleted now.
+				return true, nil
+			case "creating":
+				return false, nil
+			default:
+				return true, fmt.Errorf("unexpected State of newly created AWS EBS volume %s: %q", volumeName, *vol.State)
+			}
+		}
+		return false, nil
+	})
+	return err
 }
 
 // DeleteDisk implements Volumes.DeleteDisk

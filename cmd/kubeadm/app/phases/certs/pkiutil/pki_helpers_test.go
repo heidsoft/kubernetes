@@ -439,16 +439,16 @@ func TestGetAPIServerAltNames(t *testing.T) {
 
 	var tests = []struct {
 		name                string
-		cfg                 *kubeadmapi.MasterConfiguration
+		cfg                 *kubeadmapi.InitConfiguration
 		expectedDNSNames    []string
 		expectedIPAddresses []string
 	}{
 		{
 			name: "ControlPlaneEndpoint DNS",
-			cfg: &kubeadmapi.MasterConfiguration{
+			cfg: &kubeadmapi.InitConfiguration{
 				API:               kubeadmapi.API{AdvertiseAddress: "1.2.3.4", ControlPlaneEndpoint: "api.k8s.io:6443"},
 				Networking:        kubeadmapi.Networking{ServiceSubnet: "10.96.0.0/12", DNSDomain: "cluster.local"},
-				NodeName:          "valid-hostname",
+				NodeRegistration:  kubeadmapi.NodeRegistrationOptions{Name: "valid-hostname"},
 				APIServerCertSANs: []string{"10.1.245.94", "10.1.245.95", "1.2.3.L", "invalid,commas,in,DNS"},
 			},
 			expectedDNSNames:    []string{"valid-hostname", "kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local", "api.k8s.io"},
@@ -456,10 +456,10 @@ func TestGetAPIServerAltNames(t *testing.T) {
 		},
 		{
 			name: "ControlPlaneEndpoint IP",
-			cfg: &kubeadmapi.MasterConfiguration{
+			cfg: &kubeadmapi.InitConfiguration{
 				API:               kubeadmapi.API{AdvertiseAddress: "1.2.3.4", ControlPlaneEndpoint: "4.5.6.7:6443"},
 				Networking:        kubeadmapi.Networking{ServiceSubnet: "10.96.0.0/12", DNSDomain: "cluster.local"},
-				NodeName:          "valid-hostname",
+				NodeRegistration:  kubeadmapi.NodeRegistrationOptions{Name: "valid-hostname"},
 				APIServerCertSANs: []string{"10.1.245.94", "10.1.245.95", "1.2.3.L", "invalid,commas,in,DNS"},
 			},
 			expectedDNSNames:    []string{"valid-hostname", "kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local"},
@@ -506,7 +506,7 @@ func TestGetAPIServerAltNames(t *testing.T) {
 func TestGetEtcdAltNames(t *testing.T) {
 	proxy := "user-etcd-proxy"
 	proxyIP := "10.10.10.100"
-	cfg := &kubeadmapi.MasterConfiguration{
+	cfg := &kubeadmapi.InitConfiguration{
 		Etcd: kubeadmapi.Etcd{
 			Local: &kubeadmapi.LocalEtcd{
 				ServerCertSANs: []string{
@@ -539,7 +539,7 @@ func TestGetEtcdAltNames(t *testing.T) {
 		}
 	}
 
-	expectedIPAddresses := []string{"127.0.0.1", proxyIP}
+	expectedIPAddresses := []string{"127.0.0.1", net.IPv6loopback.String(), proxyIP}
 	for _, IPAddress := range expectedIPAddresses {
 		found := false
 		for _, val := range altNames.IPs {
@@ -560,9 +560,9 @@ func TestGetEtcdPeerAltNames(t *testing.T) {
 	proxy := "user-etcd-proxy"
 	proxyIP := "10.10.10.100"
 	advertiseIP := "1.2.3.4"
-	cfg := &kubeadmapi.MasterConfiguration{
-		API:      kubeadmapi.API{AdvertiseAddress: advertiseIP},
-		NodeName: hostname,
+	cfg := &kubeadmapi.InitConfiguration{
+		API:              kubeadmapi.API{AdvertiseAddress: advertiseIP},
+		NodeRegistration: kubeadmapi.NodeRegistrationOptions{Name: hostname},
 		Etcd: kubeadmapi.Etcd{
 			Local: &kubeadmapi.LocalEtcd{
 				PeerCertSANs: []string{

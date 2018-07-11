@@ -85,7 +85,7 @@ func TestCreateJobFromCronJob(t *testing.T) {
 	f := cmdtesting.NewTestFactory()
 	defer f.Cleanup()
 
-	printFlags := NewPrintFlags("created", legacyscheme.Scheme)
+	printFlags := genericclioptions.NewPrintFlags("created").WithTypeSetter(legacyscheme.Scheme)
 
 	ioStreams, _, buf, _ := genericclioptions.NewTestIOStreams()
 	cmdOptions := &CreateJobOptions{
@@ -125,7 +125,7 @@ func TestCreateJobFromCronJob(t *testing.T) {
 		t.Errorf("expected length of labels array to be 1, got %d", l)
 	}
 	if v, ok := submittedJob.Labels["test-label"]; !ok || v != "test-value" {
-		t.Errorf("expected label test-label=test-value to to exist, got '%s'", v)
+		t.Errorf("expected label test-label=test-value to exist, got '%s'", v)
 	}
 
 	if l := len(submittedJob.Spec.Template.Spec.Containers); l != 1 {

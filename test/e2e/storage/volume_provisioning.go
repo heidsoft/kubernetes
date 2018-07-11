@@ -57,6 +57,7 @@ type storageClassTest struct {
 	pvCheck        func(volume *v1.PersistentVolume) error
 	nodeName       string
 	attach         bool
+	volumeMode     *v1.PersistentVolumeMode
 }
 
 const (
@@ -119,6 +120,10 @@ func testDynamicProvisioning(t storageClassTest, client clientset.Interface, cla
 	} else {
 		Expect(pv.Spec.PersistentVolumeReclaimPolicy).To(Equal(*class.ReclaimPolicy))
 		Expect(pv.Spec.MountOptions).To(Equal(class.MountOptions))
+	}
+	if t.volumeMode != nil {
+		Expect(pv.Spec.VolumeMode).NotTo(BeNil())
+		Expect(*pv.Spec.VolumeMode).To(Equal(*t.volumeMode))
 	}
 
 	// Run the checker
@@ -245,7 +250,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 	})
 
 	Describe("DynamicProvisioner", func() {
-		It("should provision storage with different parameters [Slow]", func() {
+		It("should provision storage with different parameters", func() {
 			cloudZone := getRandomCloudZone(c)
 
 			// This test checks that dynamic provisioning can provision a volume
@@ -816,6 +821,81 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 			claim := newClaim(test, ns, suffix)
 
 			testDynamicProvisioning(test, c, claim, class)
+		})
+	})
+
+	Describe("Block volume provisioning [Feature:BlockVolume]", func() {
+		It("should create and delete block persistent volumes", func() {
+
+			// TODO: add openstack once Cinder volume plugin supports block volumes
+			framework.SkipUnlessProviderIs("gce", "aws", "gke", "vsphere", "azure")
+
+			By("creating a claim with default class")
+			block := v1.PersistentVolumeBlock
+			test := storageClassTest{
+				name:         "default",
+				claimSize:    "2Gi",
+				expectedSize: "2Gi",
+				volumeMode:   &block,
+			}
+			// gce or gke
+			if getDefaultPluginName() == "kubernetes.io/gce-pd" {
+				// using GB not GiB as e2e test unit since gce-pd returns GB,
+				// or expectedSize may be greater than claimSize.
+				test.claimSize = "2G"
+				test.expectedSize = "2G"
+			}
+
+			claim := newClaim(test, ns, "default")
+			claim.Spec.VolumeMode = &block
+			testDynamicProvisioning(test, c, claim, nil)
+		})
+	})
+	Describe("Invalid AWS KMS key", func() {
+		It("should report an error and create no PV", func() {
+			framework.SkipUnlessProviderIs("aws")
+			test := storageClassTest{
+				name:        "AWS EBS with invalid KMS key",
+				provisioner: "kubernetes.io/aws-ebs",
+				claimSize:   "2Gi",
+				parameters:  map[string]string{"kmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/55555555-5555-5555-5555-555555555555"},
+			}
+
+			By("creating a StorageClass")
+			suffix := fmt.Sprintf("invalid-aws")
+			class := newStorageClass(test, ns, suffix)
+			class, err := c.StorageV1().StorageClasses().Create(class)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() {
+				framework.Logf("deleting storage class %s", class.Name)
+				framework.ExpectNoError(c.StorageV1().StorageClasses().Delete(class.Name, nil))
+			}()
+
+			By("creating a claim object with a suffix for gluster dynamic provisioner")
+			claim := newClaim(test, ns, suffix)
+			claim.Spec.StorageClassName = &class.Name
+			claim, err = c.CoreV1().PersistentVolumeClaims(claim.Namespace).Create(claim)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() {
+				framework.Logf("deleting claim %q/%q", claim.Namespace, claim.Name)
+				err = c.CoreV1().PersistentVolumeClaims(claim.Namespace).Delete(claim.Name, nil)
+				if err != nil && !apierrs.IsNotFound(err) {
+					framework.Failf("Error deleting claim %q. Error: %v", claim.Name, err)
+				}
+			}()
+
+			// Watch events until the message about invalid key appears
+			err = wait.Poll(time.Second, framework.ClaimProvisionTimeout, func() (bool, error) {
+				events, err := c.CoreV1().Events(claim.Namespace).List(metav1.ListOptions{})
+				Expect(err).NotTo(HaveOccurred())
+				for _, event := range events.Items {
+					if strings.Contains(event.Message, "failed to create encrypted volume: the volume disappeared after creation, most likely due to inaccessible KMS encryption key") {
+						return true, nil
+					}
+				}
+				return false, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

@@ -23,7 +23,6 @@ import (
 	"net"
 	goruntime "runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/golang/glog"
@@ -49,9 +48,6 @@ import (
 )
 
 const (
-	// maxImagesInNodeStatus is the number of max images we store in image status.
-	maxImagesInNodeStatus = 50
-
 	// maxNamesPerImageInNodeStatus is max number of names per image stored in
 	// the node status.
 	maxNamesPerImageInNodeStatus = 5
@@ -130,6 +126,7 @@ func (kl *Kubelet) tryRegisterWithAPIServer(node *v1.Node) bool {
 	// annotation.
 	requiresUpdate := kl.reconcileCMADAnnotationWithExistingNode(node, existingNode)
 	requiresUpdate = kl.updateDefaultLabels(node, existingNode) || requiresUpdate
+	requiresUpdate = kl.reconcileExtendedResource(node, existingNode) || requiresUpdate
 	if requiresUpdate {
 		if _, _, err := nodeutil.PatchNodeStatus(kl.kubeClient.CoreV1(), types.NodeName(kl.nodeName), originalNode, existingNode); err != nil {
 			glog.Errorf("Unable to reconcile node %q with API server: error updating node: %v", kl.nodeName, err)
@@ -138,6 +135,19 @@ func (kl *Kubelet) tryRegisterWithAPIServer(node *v1.Node) bool {
 	}
 
 	return true
+}
+
+// Zeros out extended resource capacity during reconciliation.
+func (kl *Kubelet) reconcileExtendedResource(initialNode, node *v1.Node) bool {
+	requiresUpdate := false
+	for k := range node.Status.Capacity {
+		if v1helper.IsExtendedResourceName(k) {
+			node.Status.Capacity[k] = *resource.NewQuantity(int64(0), resource.DecimalSI)
+			node.Status.Allocatable[k] = *resource.NewQuantity(int64(0), resource.DecimalSI)
+			requiresUpdate = true
+		}
+	}
+	return requiresUpdate
 }
 
 // updateDefaultLabels will set the default labels on the node
@@ -329,6 +339,30 @@ func (kl *Kubelet) initialNode() (*v1.Node, error) {
 	return node, nil
 }
 
+// setVolumeLimits updates volume limits on the node
+func (kl *Kubelet) setVolumeLimits(node *v1.Node) {
+	if node.Status.Capacity == nil {
+		node.Status.Capacity = v1.ResourceList{}
+	}
+
+	if node.Status.Allocatable == nil {
+		node.Status.Allocatable = v1.ResourceList{}
+	}
+
+	pluginWithLimits := kl.volumePluginMgr.ListVolumePluginWithLimits()
+	for _, volumePlugin := range pluginWithLimits {
+		attachLimits, err := volumePlugin.GetVolumeLimits()
+		if err != nil {
+			glog.V(4).Infof("Error getting volume limit for plugin %s", volumePlugin.GetPluginName())
+			continue
+		}
+		for limitKey, value := range attachLimits {
+			node.Status.Capacity[v1.ResourceName(limitKey)] = *resource.NewQuantity(value, resource.DecimalSI)
+			node.Status.Allocatable[v1.ResourceName(limitKey)] = *resource.NewQuantity(value, resource.DecimalSI)
+		}
+	}
+}
+
 // syncNodeStatus should be called periodically from a goroutine.
 // It synchronizes node status to master, registering the kubelet first if
 // necessary.
@@ -429,47 +463,11 @@ func (kl *Kubelet) setNodeAddress(node *v1.Node) error {
 		return nil
 	}
 	if kl.cloud != nil {
-		instances, ok := kl.cloud.Instances()
-		if !ok {
-			return fmt.Errorf("failed to get instances from cloud provider")
-		}
-		// TODO(roberthbailey): Can we do this without having credentials to talk
-		// to the cloud provider?
-		// TODO(justinsb): We can if CurrentNodeName() was actually CurrentNode() and returned an interface
-		// TODO: If IP addresses couldn't be fetched from the cloud provider, should kubelet fallback on the other methods for getting the IP below?
-		var nodeAddresses []v1.NodeAddress
-		var err error
-
-		// Make sure the instances.NodeAddresses returns even if the cloud provider API hangs for a long time
-		func() {
-			kl.cloudproviderRequestMux.Lock()
-			if len(kl.cloudproviderRequestParallelism) > 0 {
-				kl.cloudproviderRequestMux.Unlock()
-				return
-			}
-			kl.cloudproviderRequestParallelism <- 0
-			kl.cloudproviderRequestMux.Unlock()
-
-			go func() {
-				nodeAddresses, err = instances.NodeAddresses(context.TODO(), kl.nodeName)
-
-				kl.cloudproviderRequestMux.Lock()
-				<-kl.cloudproviderRequestParallelism
-				kl.cloudproviderRequestMux.Unlock()
-
-				kl.cloudproviderRequestSync <- 0
-			}()
-		}()
-
-		select {
-		case <-kl.cloudproviderRequestSync:
-		case <-time.After(kl.cloudproviderRequestTimeout):
-			err = fmt.Errorf("Timeout after %v", kl.cloudproviderRequestTimeout)
-		}
-
+		nodeAddresses, err := kl.cloudResourceSyncManager.NodeAddresses()
 		if err != nil {
-			return fmt.Errorf("failed to get node address from cloud provider: %v", err)
+			return err
 		}
+
 		if kl.nodeIP != nil {
 			enforcedNodeAddresses := []v1.NodeAddress{}
 
@@ -721,8 +719,9 @@ func (kl *Kubelet) setNodeStatusImages(node *v1.Node) {
 		return
 	}
 	// sort the images from max to min, and only set top N images into the node status.
-	if maxImagesInNodeStatus < len(containerImages) {
-		containerImages = containerImages[0:maxImagesInNodeStatus]
+	if int(kl.nodeStatusMaxImages) > -1 &&
+		int(kl.nodeStatusMaxImages) < len(containerImages) {
+		containerImages = containerImages[0:kl.nodeStatusMaxImages]
 	}
 
 	for _, image := range containerImages {
@@ -753,6 +752,9 @@ func (kl *Kubelet) setNodeStatusInfo(node *v1.Node) {
 	kl.setNodeStatusDaemonEndpoints(node)
 	kl.setNodeStatusImages(node)
 	kl.setNodeStatusGoRuntime(node)
+	if utilfeature.DefaultFeatureGate.Enabled(features.AttachVolumeLimit) {
+		kl.setVolumeLimits(node)
+	}
 }
 
 // Set Ready condition for the node.
@@ -1034,24 +1036,17 @@ func (kl *Kubelet) setNodeOODCondition(node *v1.Node) {
 	}
 }
 
-// Maintains Node.Spec.Unschedulable value from previous run of tryUpdateNodeStatus()
-// TODO: why is this a package var?
-var (
-	oldNodeUnschedulable     bool
-	oldNodeUnschedulableLock sync.Mutex
-)
-
 // record if node schedulable change.
 func (kl *Kubelet) recordNodeSchedulableEvent(node *v1.Node) {
-	oldNodeUnschedulableLock.Lock()
-	defer oldNodeUnschedulableLock.Unlock()
-	if oldNodeUnschedulable != node.Spec.Unschedulable {
+	kl.lastNodeUnschedulableLock.Lock()
+	defer kl.lastNodeUnschedulableLock.Unlock()
+	if kl.lastNodeUnschedulable != node.Spec.Unschedulable {
 		if node.Spec.Unschedulable {
 			kl.recordNodeStatusEvent(v1.EventTypeNormal, events.NodeNotSchedulable)
 		} else {
 			kl.recordNodeStatusEvent(v1.EventTypeNormal, events.NodeSchedulable)
 		}
-		oldNodeUnschedulable = node.Spec.Unschedulable
+		kl.lastNodeUnschedulable = node.Spec.Unschedulable
 	}
 }
 

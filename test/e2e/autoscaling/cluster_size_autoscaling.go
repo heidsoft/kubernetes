@@ -22,6 +22,7 @@ import (
 	"io/ioutil"
 	"math"
 	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -30,7 +31,7 @@ import (
 
 	"k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1beta1"
-	"k8s.io/api/scheduling/v1alpha1"
+	schedulerapi "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -207,106 +208,146 @@ var _ = SIGDescribe("Cluster size autoscaling [Slow]", func() {
 	It("should increase cluster size if pending pods are small [Feature:ClusterSizeAutoscalingScaleUp]",
 		func() { simpleScaleUpTest(0) })
 
-	supportedGpuTypes := []string{"nvidia-tesla-k80", "nvidia-tesla-v100", "nvidia-tesla-p100"}
-	for _, gpuType := range supportedGpuTypes {
+	gpuType := os.Getenv("TESTED_GPU_TYPE")
 
-		It(fmt.Sprintf("Should scale up GPU pool from 0 [GpuType:%s] [Feature:ClusterSizeAutoscalingGpu]", gpuType), func() {
-			framework.SkipUnlessProviderIs("gke")
+	It(fmt.Sprintf("Should scale up GPU pool from 0 [GpuType:%s] [Feature:ClusterSizeAutoscalingGpu]", gpuType), func() {
+		framework.SkipUnlessProviderIs("gke")
+		if gpuType == "" {
+			framework.Failf("TEST_GPU_TYPE not defined")
+			return
+		}
 
-			const gpuPoolName = "gpu-pool"
-			addGpuNodePool(gpuPoolName, gpuType, 1, 0)
-			defer deleteNodePool(gpuPoolName)
+		const gpuPoolName = "gpu-pool"
+		addGpuNodePool(gpuPoolName, gpuType, 1, 0)
+		defer deleteNodePool(gpuPoolName)
 
-			installNvidiaDriversDaemonSet()
+		installNvidiaDriversDaemonSet()
 
-			By("Enable autoscaler")
-			framework.ExpectNoError(enableAutoscaler(gpuPoolName, 0, 1))
-			defer disableAutoscaler(gpuPoolName, 0, 1)
-			Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(0))
+		By("Enable autoscaler")
+		framework.ExpectNoError(enableAutoscaler(gpuPoolName, 0, 1))
+		defer disableAutoscaler(gpuPoolName, 0, 1)
+		Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(0))
 
-			By("Schedule a pod which requires GPU")
-			framework.ExpectNoError(scheduleGpuPod(f, "gpu-pod-rc"))
+		By("Schedule a pod which requires GPU")
+		framework.ExpectNoError(scheduleGpuPod(f, "gpu-pod-rc"))
+		defer framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "gpu-pod-rc")
 
-			framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
-				func(size int) bool { return size == nodeCount+1 }, scaleUpTimeout))
-			Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(1))
-		})
+		framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
+			func(size int) bool { return size == nodeCount+1 }, scaleUpTimeout))
+		Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(1))
+	})
 
-		It(fmt.Sprintf("Should scale up GPU pool from 1 [GpuType:%s] [Feature:ClusterSizeAutoscalingGpu]", gpuType), func() {
-			framework.SkipUnlessProviderIs("gke")
+	It(fmt.Sprintf("Should scale up GPU pool from 1 [GpuType:%s] [Feature:ClusterSizeAutoscalingGpu]", gpuType), func() {
+		framework.SkipUnlessProviderIs("gke")
+		if gpuType == "" {
+			framework.Failf("TEST_GPU_TYPE not defined")
+			return
+		}
 
-			const gpuPoolName = "gpu-pool"
-			addGpuNodePool(gpuPoolName, gpuType, 1, 1)
-			defer deleteNodePool(gpuPoolName)
+		const gpuPoolName = "gpu-pool"
+		addGpuNodePool(gpuPoolName, gpuType, 1, 1)
+		defer deleteNodePool(gpuPoolName)
 
-			installNvidiaDriversDaemonSet()
+		installNvidiaDriversDaemonSet()
 
-			By("Schedule a single pod which requires GPU")
-			framework.ExpectNoError(scheduleGpuPod(f, "gpu-pod-rc"))
+		By("Schedule a single pod which requires GPU")
+		framework.ExpectNoError(scheduleGpuPod(f, "gpu-pod-rc"))
+		defer framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "gpu-pod-rc")
 
-			By("Enable autoscaler")
-			framework.ExpectNoError(enableAutoscaler(gpuPoolName, 0, 2))
-			defer disableAutoscaler(gpuPoolName, 0, 2)
-			Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(1))
+		By("Enable autoscaler")
+		framework.ExpectNoError(enableAutoscaler(gpuPoolName, 0, 2))
+		defer disableAutoscaler(gpuPoolName, 0, 2)
+		Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(1))
 
-			By("Scale GPU deployment")
-			framework.ScaleRC(f.ClientSet, f.ScalesGetter, f.Namespace.Name, "gpu-pod-rc", 2, true)
+		By("Scale GPU deployment")
+		framework.ScaleRC(f.ClientSet, f.ScalesGetter, f.Namespace.Name, "gpu-pod-rc", 2, true)
 
-			framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
-				func(size int) bool { return size == nodeCount+2 }, scaleUpTimeout))
-			Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(2))
-		})
+		framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
+			func(size int) bool { return size == nodeCount+2 }, scaleUpTimeout))
+		Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(2))
+	})
 
-		It(fmt.Sprintf("Should not scale GPU pool up if pod does not require GPUs [GpuType:%s] [Feature:ClusterSizeAutoscalingGpu]", gpuType), func() {
-			framework.SkipUnlessProviderIs("gke")
+	It(fmt.Sprintf("Should not scale GPU pool up if pod does not require GPUs [GpuType:%s] [Feature:ClusterSizeAutoscalingGpu]", gpuType), func() {
+		framework.SkipUnlessProviderIs("gke")
+		if gpuType == "" {
+			framework.Failf("TEST_GPU_TYPE not defined")
+			return
+		}
 
-			const gpuPoolName = "gpu-pool"
-			addGpuNodePool(gpuPoolName, gpuType, 1, 0)
-			defer deleteNodePool(gpuPoolName)
+		const gpuPoolName = "gpu-pool"
+		addGpuNodePool(gpuPoolName, gpuType, 1, 0)
+		defer deleteNodePool(gpuPoolName)
 
-			installNvidiaDriversDaemonSet()
+		installNvidiaDriversDaemonSet()
 
-			By("Enable autoscaler")
-			framework.ExpectNoError(enableAutoscaler(gpuPoolName, 0, 1))
-			defer disableAutoscaler(gpuPoolName, 0, 1)
-			Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(0))
+		By("Enable autoscaler")
+		framework.ExpectNoError(enableAutoscaler(gpuPoolName, 0, 1))
+		defer disableAutoscaler(gpuPoolName, 0, 1)
+		Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(0))
 
-			By("Schedule bunch of pods beyond point of filling default pool but do not request any GPUs")
-			ReserveMemory(f, "memory-reservation", 100, nodeCount*memAllocatableMb, false, 1*time.Second)
-			defer framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "memory-reservation")
-			// Verify that cluster size is increased
-			framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
-				func(size int) bool { return size >= nodeCount+1 }, scaleUpTimeout))
+		By("Schedule bunch of pods beyond point of filling default pool but do not request any GPUs")
+		ReserveMemory(f, "memory-reservation", 100, nodeCount*memAllocatableMb, false, 1*time.Second)
+		defer framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "memory-reservation")
+		// Verify that cluster size is increased
+		framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
+			func(size int) bool { return size >= nodeCount+1 }, scaleUpTimeout))
 
-			// Expect gpu pool to stay intact
-			Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(0))
-		})
+		// Expect gpu pool to stay intact
+		Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(0))
+	})
 
-		It(fmt.Sprintf("Should scale down GPU pool from 1 [GpuType:%s] [Feature:ClusterSizeAutoscalingGpu]", gpuType), func() {
-			framework.SkipUnlessProviderIs("gke")
+	It(fmt.Sprintf("Should scale down GPU pool from 1 [GpuType:%s] [Feature:ClusterSizeAutoscalingGpu]", gpuType), func() {
+		framework.SkipUnlessProviderIs("gke")
+		if gpuType == "" {
+			framework.Failf("TEST_GPU_TYPE not defined")
+			return
+		}
 
-			const gpuPoolName = "gpu-pool"
-			addGpuNodePool(gpuPoolName, gpuType, 1, 1)
-			defer deleteNodePool(gpuPoolName)
+		const gpuPoolName = "gpu-pool"
+		addGpuNodePool(gpuPoolName, gpuType, 1, 1)
+		defer deleteNodePool(gpuPoolName)
 
-			installNvidiaDriversDaemonSet()
+		installNvidiaDriversDaemonSet()
 
-			By("Schedule a single pod which requires GPU")
-			framework.ExpectNoError(scheduleGpuPod(f, "gpu-pod-rc"))
+		By("Schedule a single pod which requires GPU")
+		framework.ExpectNoError(scheduleGpuPod(f, "gpu-pod-rc"))
+		defer framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "gpu-pod-rc")
 
-			By("Enable autoscaler")
-			framework.ExpectNoError(enableAutoscaler(gpuPoolName, 0, 1))
-			defer disableAutoscaler(gpuPoolName, 0, 1)
-			Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(1))
+		By("Enable autoscaler")
+		framework.ExpectNoError(enableAutoscaler(gpuPoolName, 0, 1))
+		defer disableAutoscaler(gpuPoolName, 0, 1)
+		Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(1))
 
-			By("Remove the only POD requiring GPU")
-			framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "gpu-pod-rc")
+		By("Remove the only POD requiring GPU")
+		framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "gpu-pod-rc")
 
-			framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
-				func(size int) bool { return size == nodeCount }, scaleDownTimeout))
-			Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(0))
-		})
-	}
+		framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
+			func(size int) bool { return size == nodeCount }, scaleDownTimeout))
+		Expect(len(getPoolNodes(f, gpuPoolName))).Should(Equal(0))
+	})
+
+	// TODO consider moving to [Feature:ClusterSizeAutoscalingGpu] as soon as NAP goes out of beta. Currently
+	// project needed to run the NAP tests require whitelisting for NAP alpha
+	It("NAP should add a pool with GPUs if unschedulable POD which require GPU exists [Feature:ClusterSizeAutoscalingScaleWithNAP]", func() {
+		framework.SkipUnlessProviderIs("gke")
+
+		installNvidiaDriversDaemonSet()
+		framework.ExpectNoError(enableAutoprovisioning(`
+"resource_limits":{"resource_type":"nvidia-tesla-k80", "minimum":0, "maximum": 3},
+"resource_limits":{"resource_type":"cpu", "minimum":0, "maximum":64},
+"resource_limits":{"resource_type":"memory", "minimum":0, "maximum":1000000000000}`))
+
+		By("Schedule a pod which requires GPU and wait until it is started")
+		framework.ExpectNoError(scheduleGpuPod(f, "gpu-pod-rc"))
+		defer framework.DeleteRCAndWaitForGC(f.ClientSet, f.Namespace.Name, "gpu-pod-rc")
+
+		By("Verify cluster size increased")
+		framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
+			func(size int) bool { return size == nodeCount+1 }, scaleUpTimeout))
+
+		By("Check if NAP group was created")
+		Expect(getNAPNodePoolsNumber()).Should(Equal(1))
+	})
 
 	It("should increase cluster size if pending pods are small and one node is broken [Feature:ClusterSizeAutoscalingScaleUp]",
 		func() {
@@ -958,7 +999,7 @@ var _ = SIGDescribe("Cluster size autoscaling [Slow]", func() {
 	It("shouldn't scale up if cores limit too low, should scale up after limit is changed [Feature:ClusterSizeAutoscalingScaleWithNAP]", func() {
 		framework.SkipUnlessProviderIs("gke")
 		By(fmt.Sprintf("Set core limit to %d", coreCount))
-		framework.ExpectNoError(enableAutoprovisioning(fmt.Sprintf(`"resource_limits":{"name":"cpu", "minimum":2, "maximum":%d}, "resource_limits":{"name":"memory", "minimum":0, "maximum":10000000}`, coreCount)))
+		framework.ExpectNoError(enableAutoprovisioning(fmt.Sprintf(`"resource_limits":{"resource_type":"cpu", "minimum":2, "maximum":%d}, "resource_limits":{"resource_type":"memory", "minimum":0, "maximum":10000000}`, coreCount)))
 		// Create pod allocating 1.1 allocatable for present nodes. Bigger node will have to be created.
 		cleanupFunc := ReserveMemory(f, "memory-reservation", 1, int(1.1*float64(memAllocatableMb)), false, time.Second)
 		defer cleanupFunc()
@@ -968,7 +1009,7 @@ var _ = SIGDescribe("Cluster size autoscaling [Slow]", func() {
 		framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
 			func(size int) bool { return size == nodeCount }, time.Second))
 		By("Change resource limits")
-		framework.ExpectNoError(enableAutoprovisioning(fmt.Sprintf(`"resource_limits":{"name":"cpu", "minimum":2, "maximum":%d}, "resource_limits":{"name":"memory", "minimum":0, "maximum":10000000}`, coreCount+5)))
+		framework.ExpectNoError(enableAutoprovisioning(fmt.Sprintf(`"resource_limits":{"resource_type":"cpu", "minimum":2, "maximum":%d}, "resource_limits":{"resource_type":"memory", "minimum":0, "maximum":10000000}`, coreCount+5)))
 		By("Wait for scale up")
 		framework.ExpectNoError(WaitForClusterSizeFunc(f.ClientSet,
 			func(size int) bool { return size == nodeCount+1 }, scaleUpTimeout))
@@ -1283,7 +1324,7 @@ func enableAutoprovisioning(resourceLimits string) error {
 	if resourceLimits != "" {
 		body = fmt.Sprintf(`{"update": {"desired_cluster_autoscaling": {"enable_node_autoprovisioning": true, %s}}}`, resourceLimits)
 	} else {
-		body = `{"update": {"desired_cluster_autoscaling": {"enable_node_autoprovisioning": true, "resource_limits":{"name":"cpu", "minimum":0, "maximum":100}, "resource_limits":{"name":"memory", "minimum":0, "maximum":10000000}}}}`
+		body = `{"update": {"desired_cluster_autoscaling": {"enable_node_autoprovisioning": true, "resource_limits":{"resource_type":"cpu", "minimum":0, "maximum":100}, "resource_limits":{"resource_type":"memory", "minimum":0, "maximum":10000000}}}}`
 	}
 	_, err := executeHTTPRequest(http.MethodPut, getGKEClusterURL("v1alpha1"), body)
 	if err != nil {
@@ -2150,13 +2191,13 @@ func createPriorityClasses(f *framework.Framework) func() {
 		highPriorityClassName:       1000,
 	}
 	for className, priority := range priorityClasses {
-		_, err := f.ClientSet.SchedulingV1alpha1().PriorityClasses().Create(&v1alpha1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: className}, Value: priority})
+		_, err := f.ClientSet.SchedulingV1beta1().PriorityClasses().Create(&schedulerapi.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: className}, Value: priority})
 		Expect(err == nil || errors.IsAlreadyExists(err)).To(Equal(true))
 	}
 
 	return func() {
 		for className := range priorityClasses {
-			f.ClientSet.SchedulingV1alpha1().PriorityClasses().Delete(className, nil)
+			f.ClientSet.SchedulingV1beta1().PriorityClasses().Delete(className, nil)
 		}
 	}
 }

@@ -24,15 +24,9 @@ import (
 	"github.com/golang/glog"
 	"github.com/spf13/cobra"
 
-	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/uuid"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
@@ -139,8 +133,6 @@ func NewCmdDelete(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra
 
 	deleteFlags.AddFlags(cmd)
 
-	cmd.Flags().Bool("wait", true, `If true, wait for resources to be gone before returning.  This waits for finalizers.`)
-
 	cmdutil.AddIncludeUninitializedFlag(cmd)
 	return cmd
 }
@@ -165,13 +157,8 @@ func (o *DeleteOptions) Complete(f cmdutil.Factory, args []string, cmd *cobra.Co
 	}
 	if o.GracePeriod == 0 && !o.ForceDeletion {
 		// To preserve backwards compatibility, but prevent accidental data loss, we convert --grace-period=0
-		// into --grace-period=1 and wait until the object is successfully deleted. Users may provide --force
-		// to bypass this wait.
-		o.WaitForDeletion = true
+		// into --grace-period=1. Users may provide --force to bypass this conversion.
 		o.GracePeriod = 1
-	}
-	if b, err := cmd.Flags().GetBool("wait"); err == nil {
-		o.WaitForDeletion = b
 	}
 
 	includeUninitialized := cmdutil.ShouldIncludeUninitialized(cmd, false)
@@ -218,6 +205,11 @@ func (o *DeleteOptions) Validate(cmd *cobra.Command) error {
 		return fmt.Errorf("cannot set --all and --field-selector at the same time")
 	}
 
+	if o.GracePeriod == 0 && !o.ForceDeletion && !o.WaitForDeletion {
+		// With the explicit --wait flag we need extra validation for backward compatibility
+		return fmt.Errorf("--grace-period=0 must have either --force specified, or --wait to be set to true")
+	}
+
 	switch {
 	case o.GracePeriod == 0 && o.ForceDeletion:
 		fmt.Fprintf(o.ErrOut, "warning: Immediate deletion does not wait for confirmation that the running resource has been terminated. The resource may continue to run on the cluster indefinitely.\n")
@@ -236,21 +228,24 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 	if o.IgnoreNotFound {
 		r = r.IgnoreErrors(errors.IsNotFound)
 	}
+	deletedInfos := []*resource.Info{}
 	err := r.Visit(func(info *resource.Info, err error) error {
 		if err != nil {
 			return err
 		}
+		deletedInfos = append(deletedInfos, info)
 		found++
 
 		options := &metav1.DeleteOptions{}
 		if o.GracePeriod >= 0 {
 			options = metav1.NewDeleteOptions(int64(o.GracePeriod))
 		}
-		policy := metav1.DeletePropagationForeground
+		policy := metav1.DeletePropagationBackground
 		if !o.Cascade {
 			policy = metav1.DeletePropagationOrphan
 		}
 		options.PropagationPolicy = &policy
+
 		return o.deleteResource(info, options)
 	})
 	if err != nil {
@@ -275,7 +270,7 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 		effectiveTimeout = 168 * time.Hour
 	}
 	waitOptions := kubectlwait.WaitOptions{
-		ResourceFinder: genericclioptions.ResourceFinderForResult(o.Result),
+		ResourceFinder: genericclioptions.ResourceFinderForResult(resource.InfoListVisitor(deletedInfos)),
 		DynamicClient:  o.DynamicClient,
 		Timeout:        effectiveTimeout,
 
@@ -284,7 +279,7 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 		IOStreams:   o.IOStreams,
 	}
 	err = waitOptions.RunWait()
-	if errors.IsForbidden(err) {
+	if errors.IsForbidden(err) || errors.IsMethodNotSupported(err) {
 		// if we're forbidden from waiting, we shouldn't fail.
 		glog.V(1).Info(err)
 		return nil
@@ -293,68 +288,11 @@ func (o *DeleteOptions) DeleteResult(r *resource.Result) error {
 }
 
 func (o *DeleteOptions) deleteResource(info *resource.Info, deleteOptions *metav1.DeleteOptions) error {
-	// TODO: this should be removed as soon as DaemonSet controller properly handles object deletion
-	// see https://github.com/kubernetes/kubernetes/issues/64313 for details
-	mapping := info.ResourceMapping()
-	if mapping.Resource.GroupResource() == (schema.GroupResource{Group: "extensions", Resource: "daemonsets"}) ||
-		mapping.Resource.GroupResource() == (schema.GroupResource{Group: "apps", Resource: "daemonsets"}) {
-		if err := updateDaemonSet(info.Namespace, info.Name, o.DynamicClient); err != nil {
-			return err
-		}
-	}
-
 	if err := resource.NewHelper(info.Client, info.Mapping).DeleteWithOptions(info.Namespace, info.Name, deleteOptions); err != nil {
 		return cmdutil.AddSourceToErr("deleting", info.Source, err)
 	}
 
 	o.PrintObj(info)
-	return nil
-}
-
-func updateDaemonSet(namespace, name string, dynamicClient dynamic.Interface) error {
-	dsClient := dynamicClient.Resource(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "daemonsets"}).Namespace(namespace)
-	obj, err := dsClient.Get(name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	ds := &appsv1.DaemonSet{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, ds); err != nil {
-		return err
-	}
-
-	// We set the nodeSelector to a random label. This label is nearly guaranteed
-	// to not be set on any node so the DameonSetController will start deleting
-	// daemon pods. Once it's done deleting the daemon pods, it's safe to delete
-	// the DaemonSet.
-	ds.Spec.Template.Spec.NodeSelector = map[string]string{
-		string(uuid.NewUUID()): string(uuid.NewUUID()),
-	}
-	// force update to avoid version conflict
-	ds.ResourceVersion = ""
-
-	out, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ds)
-	if err != nil {
-		return err
-	}
-	if _, err = dsClient.Update(&unstructured.Unstructured{Object: out}); err != nil {
-		return err
-	}
-
-	// Wait for the daemon set controller to kill all the daemon pods.
-	if err := wait.Poll(1*time.Second, 5*time.Minute, func() (bool, error) {
-		updatedObj, err := dsClient.Get(name, metav1.GetOptions{})
-		if err != nil {
-			return false, nil
-		}
-		updatedDS := &appsv1.DaemonSet{}
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(updatedObj.Object, ds); err != nil {
-			return false, nil
-		}
-
-		return updatedDS.Status.CurrentNumberScheduled+updatedDS.Status.NumberMisscheduled == 0, nil
-	}); err != nil {
-		return err
-	}
 	return nil
 }
 

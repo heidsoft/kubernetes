@@ -83,49 +83,51 @@ func TestIllegalPackageSourceCheckerThroughPrintFlags(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		printFlags := genericclioptions.NewPrintFlags("succeeded").WithTypeSetter(scheme.Scheme)
-		printFlags.OutputFormat = &tc.output
+		t.Run(tc.name, func(t *testing.T) {
+			printFlags := genericclioptions.NewPrintFlags("succeeded").WithTypeSetter(scheme.Scheme)
+			printFlags.OutputFormat = &tc.output
 
-		printer, err := printFlags.ToPrinter()
-		if err != nil {
-			t.Fatalf("unexpected error %v", err)
-		}
-
-		output := bytes.NewBuffer([]byte{})
-
-		err = printer.PrintObj(tc.obj, output)
-		if err != nil {
-			if !tc.expectInternalObjErr {
+			printer, err := printFlags.ToPrinter()
+			if err != nil {
 				t.Fatalf("unexpected error %v", err)
 			}
 
-			if !genericprinters.IsInternalObjectError(err) {
-				t.Fatalf("unexpected error - expecting internal object printer error, got %q", err)
+			output := bytes.NewBuffer([]byte{})
+
+			err = printer.PrintObj(tc.obj, output)
+			if err != nil {
+				if !tc.expectInternalObjErr {
+					t.Fatalf("unexpected error %v", err)
+				}
+
+				if !genericprinters.IsInternalObjectError(err) {
+					t.Fatalf("unexpected error - expecting internal object printer error, got %q", err)
+				}
+				return
 			}
-			continue
-		}
 
-		if tc.expectInternalObjErr {
-			t.Fatalf("expected internal object printer error, but got no error")
-		}
+			if tc.expectInternalObjErr {
+				t.Fatalf("expected internal object printer error, but got no error")
+			}
 
-		if len(tc.expectedOutput) == 0 {
-			continue
-		}
+			if len(tc.expectedOutput) == 0 {
+				return
+			}
 
-		if tc.expectedOutput != output.String() {
-			t.Fatalf("unexpected output: expecting %q, got %q", tc.expectedOutput, output.String())
-		}
+			if tc.expectedOutput != output.String() {
+				t.Fatalf("unexpected output: expecting %q, got %q", tc.expectedOutput, output.String())
+			}
+		})
 	}
 }
 
 func TestIllegalPackageSourceCheckerDirectlyThroughPrinters(t *testing.T) {
-	jsonPathPrinter, err := printers.NewJSONPathPrinter("{ .metadata.name }")
+	jsonPathPrinter, err := genericprinters.NewJSONPathPrinter("{ .metadata.name }")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	goTemplatePrinter, err := printers.NewGoTemplatePrinter([]byte("{{ .metadata.name }}"))
+	goTemplatePrinter, err := genericprinters.NewGoTemplatePrinter([]byte("{{ .metadata.name }}"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +140,7 @@ func TestIllegalPackageSourceCheckerDirectlyThroughPrinters(t *testing.T) {
 	testCases := []struct {
 		name                 string
 		expectInternalObjErr bool
-		printer              printers.ResourcePrinter
+		printer              genericprinters.ResourcePrinter
 		obj                  runtime.Object
 		expectedOutput       string
 	}{
@@ -181,31 +183,33 @@ func TestIllegalPackageSourceCheckerDirectlyThroughPrinters(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		output := bytes.NewBuffer([]byte{})
+		t.Run(tc.name, func(t *testing.T) {
+			output := bytes.NewBuffer([]byte{})
 
-		err := tc.printer.PrintObj(tc.obj, output)
-		if err != nil {
-			if !tc.expectInternalObjErr {
-				t.Fatalf("unexpected error %v", err)
+			err := tc.printer.PrintObj(tc.obj, output)
+			if err != nil {
+				if !tc.expectInternalObjErr {
+					t.Fatalf("unexpected error %v", err)
+				}
+
+				if !genericprinters.IsInternalObjectError(err) {
+					t.Fatalf("unexpected error - expecting internal object printer error, got %q", err)
+				}
+				return
 			}
 
-			if !genericprinters.IsInternalObjectError(err) {
-				t.Fatalf("unexpected error - expecting internal object printer error, got %q", err)
+			if tc.expectInternalObjErr {
+				t.Fatalf("expected internal object printer error, but got no error")
 			}
-			continue
-		}
 
-		if tc.expectInternalObjErr {
-			t.Fatalf("expected internal object printer error, but got no error")
-		}
+			if len(tc.expectedOutput) == 0 {
+				return
+			}
 
-		if len(tc.expectedOutput) == 0 {
-			continue
-		}
-
-		if tc.expectedOutput != output.String() {
-			t.Fatalf("unexpected output: expecting %q, got %q", tc.expectedOutput, output.String())
-		}
+			if tc.expectedOutput != output.String() {
+				t.Fatalf("unexpected output: expecting %q, got %q", tc.expectedOutput, output.String())
+			}
+		})
 	}
 }
 

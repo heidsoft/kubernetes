@@ -21,6 +21,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/spf13/pflag"
@@ -144,9 +145,6 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 
 // ApplyTo applies the scheduler options to the given scheduler app configuration.
 func (o *Options) ApplyTo(c *schedulerappconfig.Config) error {
-	if len(o.ConfigFile) == 0 && len(o.WriteConfigTo) == 0 {
-		glog.Warning("WARNING: all flags other than --config, --write-config-to, and --cleanup are deprecated. Please begin using a config file ASAP.")
-	}
 	if len(o.ConfigFile) == 0 {
 		c.ComponentConfig = o.ComponentConfig
 
@@ -197,37 +195,37 @@ func (o *Options) Validate() []error {
 
 // Config return a scheduler config object
 func (o *Options) Config() (*schedulerappconfig.Config, error) {
+	c := &schedulerappconfig.Config{}
+	if err := o.ApplyTo(c); err != nil {
+		return nil, err
+	}
+
 	// prepare kube clients.
-	client, leaderElectionClient, eventClient, err := createClients(o.ComponentConfig.ClientConnection, o.Master)
+	client, leaderElectionClient, eventClient, err := createClients(c.ComponentConfig.ClientConnection, o.Master, c.ComponentConfig.LeaderElection.RenewDeadline.Duration)
 	if err != nil {
 		return nil, err
 	}
 
 	// Prepare event clients.
 	eventBroadcaster := record.NewBroadcaster()
-	recorder := eventBroadcaster.NewRecorder(legacyscheme.Scheme, corev1.EventSource{Component: o.ComponentConfig.SchedulerName})
+	recorder := eventBroadcaster.NewRecorder(legacyscheme.Scheme, corev1.EventSource{Component: c.ComponentConfig.SchedulerName})
 
 	// Set up leader election if enabled.
 	var leaderElectionConfig *leaderelection.LeaderElectionConfig
-	if o.ComponentConfig.LeaderElection.LeaderElect {
-		leaderElectionConfig, err = makeLeaderElectionConfig(o.ComponentConfig.LeaderElection, leaderElectionClient, recorder)
+	if c.ComponentConfig.LeaderElection.LeaderElect {
+		leaderElectionConfig, err = makeLeaderElectionConfig(c.ComponentConfig.LeaderElection, leaderElectionClient, recorder)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	c := &schedulerappconfig.Config{
-		Client:          client,
-		InformerFactory: informers.NewSharedInformerFactory(client, 0),
-		PodInformer:     factory.NewPodInformer(client, 0),
-		EventClient:     eventClient,
-		Recorder:        recorder,
-		Broadcaster:     eventBroadcaster,
-		LeaderElection:  leaderElectionConfig,
-	}
-	if err := o.ApplyTo(c); err != nil {
-		return nil, err
-	}
+	c.Client = client
+	c.InformerFactory = informers.NewSharedInformerFactory(client, 0)
+	c.PodInformer = factory.NewPodInformer(client, 0)
+	c.EventClient = eventClient
+	c.Recorder = recorder
+	c.Broadcaster = eventBroadcaster
+	c.LeaderElection = leaderElectionConfig
 
 	return c, nil
 }
@@ -264,7 +262,7 @@ func makeLeaderElectionConfig(config componentconfig.KubeSchedulerLeaderElection
 
 // createClients creates a kube client and an event client from the given config and masterOverride.
 // TODO remove masterOverride when CLI flags are removed.
-func createClients(config componentconfig.ClientConnectionConfiguration, masterOverride string) (clientset.Interface, clientset.Interface, v1core.EventsGetter, error) {
+func createClients(config componentconfig.ClientConnectionConfiguration, masterOverride string, timeout time.Duration) (clientset.Interface, clientset.Interface, v1core.EventsGetter, error) {
 	if len(config.KubeConfigFile) == 0 && len(masterOverride) == 0 {
 		glog.Warningf("Neither --kubeconfig nor --master was specified. Using default API client. This might not work.")
 	}
@@ -289,7 +287,10 @@ func createClients(config componentconfig.ClientConnectionConfiguration, masterO
 		return nil, nil, nil, err
 	}
 
-	leaderElectionClient, err := clientset.NewForConfig(restclient.AddUserAgent(kubeConfig, "leader-election"))
+	// shallow copy, do not modify the kubeConfig.Timeout.
+	restConfig := *kubeConfig
+	restConfig.Timeout = timeout
+	leaderElectionClient, err := clientset.NewForConfig(restclient.AddUserAgent(&restConfig, "leader-election"))
 	if err != nil {
 		return nil, nil, nil, err
 	}

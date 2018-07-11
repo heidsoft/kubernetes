@@ -18,7 +18,9 @@ limitations under the License.
 package app
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -51,6 +53,7 @@ import (
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
 	latestschedulerapi "k8s.io/kubernetes/pkg/scheduler/api/latest"
 	"k8s.io/kubernetes/pkg/scheduler/factory"
+	"k8s.io/kubernetes/pkg/scheduler/metrics"
 	"k8s.io/kubernetes/pkg/util/configz"
 	utilflag "k8s.io/kubernetes/pkg/util/flag"
 	"k8s.io/kubernetes/pkg/version"
@@ -179,10 +182,21 @@ func Run(c schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}) error 
 	controller.WaitForCacheSync("scheduler", stopCh, c.PodInformer.Informer().HasSynced)
 
 	// Prepare a reusable run function.
-	run := func(stopCh <-chan struct{}) {
+	run := func(ctx context.Context) {
 		sched.Run()
-		<-stopCh
+		<-ctx.Done()
 	}
+
+	ctx, cancel := context.WithCancel(context.TODO()) // TODO once Run() accepts a context, it should be used here
+	defer cancel()
+
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	// If leader election is enabled, run via LeaderElector until done and exit.
 	if c.LeaderElection != nil {
@@ -197,13 +211,13 @@ func Run(c schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}) error 
 			return fmt.Errorf("couldn't create leader elector: %v", err)
 		}
 
-		leaderElector.Run()
+		leaderElector.Run(ctx)
 
 		return fmt.Errorf("lost lease")
 	}
 
 	// Leader election is disabled, so run inline until done.
-	run(stopCh)
+	run(ctx)
 	return fmt.Errorf("finished without leader elect")
 }
 
@@ -221,11 +235,23 @@ func buildHandlerChain(handler http.Handler, authn authenticator.Request, authz 
 	return handler
 }
 
+func installMetricHandler(pathRecorderMux *mux.PathRecorderMux) {
+	configz.InstallHandler(pathRecorderMux)
+	defaultMetricsHandler := prometheus.Handler().ServeHTTP
+	pathRecorderMux.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == "DELETE" {
+			metrics.Reset()
+			io.WriteString(w, "metrics reset\n")
+			return
+		}
+		defaultMetricsHandler(w, req)
+	})
+}
+
 // newMetricsHandler builds a metrics server from the config.
 func newMetricsHandler(config *componentconfig.KubeSchedulerConfiguration) http.Handler {
 	pathRecorderMux := mux.NewPathRecorderMux("kube-scheduler")
-	configz.InstallHandler(pathRecorderMux)
-	pathRecorderMux.Handle("/metrics", prometheus.Handler())
+	installMetricHandler(pathRecorderMux)
 	if config.EnableProfiling {
 		routes.Profiling{}.Install(pathRecorderMux)
 		if config.EnableContentionProfiling {
@@ -242,8 +268,7 @@ func newHealthzHandler(config *componentconfig.KubeSchedulerConfiguration, separ
 	pathRecorderMux := mux.NewPathRecorderMux("kube-scheduler")
 	healthz.InstallHandler(pathRecorderMux)
 	if !separateMetrics {
-		configz.InstallHandler(pathRecorderMux)
-		pathRecorderMux.Handle("/metrics", prometheus.Handler())
+		installMetricHandler(pathRecorderMux)
 	}
 	if config.EnableProfiling {
 		routes.Profiling{}.Install(pathRecorderMux)
