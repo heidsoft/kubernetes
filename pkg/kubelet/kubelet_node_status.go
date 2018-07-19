@@ -162,6 +162,9 @@ func (kl *Kubelet) updateDefaultLabels(initialNode, existingNode *v1.Node) bool 
 	}
 
 	var needsUpdate bool = false
+	if existingNode.Labels == nil {
+		existingNode.Labels = make(map[string]string)
+	}
 	//Set default labels but make sure to not set labels with empty values
 	for _, label := range defaultLabels {
 		if _, hasInitialValue := initialNode.Labels[label]; !hasInitialValue {
@@ -428,6 +431,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	if err != nil {
 		return err
 	}
+	kl.setLastObservedNodeAddresses(updatedNode.Status.Addresses)
 	// If update finishes successfully, mark the volumeInUse as reportedInUse to indicate
 	// those volumes are already updated in the node's status
 	kl.volumeManager.MarkVolumesAsReportedInUse(updatedNode.Status.VolumesInUse)
@@ -493,20 +497,10 @@ func (kl *Kubelet) setNodeAddress(node *v1.Node) error {
 			return fmt.Errorf("failed to get node address from cloud provider that matches ip: %v", kl.nodeIP)
 		}
 
-		// Only add a NodeHostName address if the cloudprovider did not specify one
-		// (we assume the cloudprovider knows best)
-		var addressNodeHostName *v1.NodeAddress
-		for i := range nodeAddresses {
-			if nodeAddresses[i].Type == v1.NodeHostName {
-				addressNodeHostName = &nodeAddresses[i]
-				break
-			}
-		}
-		if addressNodeHostName == nil {
-			hostnameAddress := v1.NodeAddress{Type: v1.NodeHostName, Address: kl.GetHostname()}
-			nodeAddresses = append(nodeAddresses, hostnameAddress)
-		} else {
-			glog.V(2).Infof("Using Node Hostname from cloudprovider: %q", addressNodeHostName.Address)
+		// Only add a NodeHostName address if the cloudprovider did not specify any addresses.
+		// (we assume the cloudprovider is authoritative if it specifies any addresses)
+		if len(nodeAddresses) == 0 {
+			nodeAddresses = []v1.NodeAddress{{Type: v1.NodeHostName, Address: kl.GetHostname()}}
 		}
 		node.Status.Addresses = nodeAddresses
 	} else {
@@ -1070,6 +1064,17 @@ func (kl *Kubelet) setNodeStatus(node *v1.Node) {
 			glog.Warningf("Failed to set some node status fields: %s", err)
 		}
 	}
+}
+
+func (kl *Kubelet) setLastObservedNodeAddresses(addresses []v1.NodeAddress) {
+	kl.lastObservedNodeAddressesMux.Lock()
+	defer kl.lastObservedNodeAddressesMux.Unlock()
+	kl.lastObservedNodeAddresses = addresses
+}
+func (kl *Kubelet) getLastObservedNodeAddresses() []v1.NodeAddress {
+	kl.lastObservedNodeAddressesMux.Lock()
+	defer kl.lastObservedNodeAddressesMux.Unlock()
+	return kl.lastObservedNodeAddresses
 }
 
 // defaultNodeStatusFuncs is a factory that generates the default set of
