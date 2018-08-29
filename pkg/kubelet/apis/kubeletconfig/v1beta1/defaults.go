@@ -24,7 +24,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/qos"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/master/ports"
-	utilpointer "k8s.io/kubernetes/pkg/util/pointer"
+	utilpointer "k8s.io/utils/pointer"
 )
 
 const (
@@ -105,6 +105,9 @@ func SetDefaults_KubeletConfiguration(obj *KubeletConfiguration) {
 	}
 	if obj.NodeStatusUpdateFrequency == zeroDuration {
 		obj.NodeStatusUpdateFrequency = metav1.Duration{Duration: 10 * time.Second}
+	}
+	if obj.NodeLeaseDurationSeconds == 0 {
+		obj.NodeLeaseDurationSeconds = 40
 	}
 	if obj.ImageMinimumGCAge == zeroDuration {
 		obj.ImageMinimumGCAge = metav1.Duration{Duration: 2 * time.Minute}

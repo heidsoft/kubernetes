@@ -26,9 +26,9 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/diff"
+	apiserverconfig "k8s.io/apiserver/pkg/apis/config"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	cmoptions "k8s.io/kubernetes/cmd/controller-manager/app/options"
-	"k8s.io/kubernetes/pkg/apis/componentconfig"
 )
 
 func TestDefaultFlags(t *testing.T) {
@@ -48,7 +48,7 @@ func TestDefaultFlags(t *testing.T) {
 			KubeAPIQPS:              20.0,
 			KubeAPIBurst:            30,
 			ControllerStartInterval: metav1.Duration{Duration: 0},
-			LeaderElection: componentconfig.LeaderElectionConfiguration{
+			LeaderElection: apiserverconfig.LeaderElectionConfiguration{
 				ResourceLock:  "endpoints",
 				LeaderElect:   true,
 				LeaseDuration: metav1.Duration{Duration: 15 * time.Second},
@@ -57,8 +57,8 @@ func TestDefaultFlags(t *testing.T) {
 			},
 		},
 		KubeCloudShared: &cmoptions.KubeCloudSharedOptions{
-			Port:                      10253,     // Note: InsecureServingOptions.ApplyTo will write the flag value back into the component config
-			Address:                   "0.0.0.0", // Note: InsecureServingOptions.ApplyTo will write the flag value back into the component config
+			Port:                      10253,     // Note: DeprecatedInsecureServingOptions.ApplyTo will write the flag value back into the component config
+			Address:                   "0.0.0.0", // Note: DeprecatedInsecureServingOptions.ApplyTo will write the flag value back into the component config
 			RouteReconciliationPeriod: metav1.Duration{Duration: 10 * time.Second},
 			NodeMonitorPeriod:         metav1.Duration{Duration: 5 * time.Second},
 			ClusterName:               "kubernetes",
@@ -79,7 +79,7 @@ func TestDefaultFlags(t *testing.T) {
 			},
 			HTTP2MaxStreamsPerConnection: 0,
 		},
-		InsecureServing: &cmoptions.InsecureServingOptions{
+		InsecureServing: &apiserveroptions.DeprecatedInsecureServingOptions{
 			BindAddress: net.ParseIP("0.0.0.0"),
 			BindPort:    int(10253),
 			BindNetwork: "tcp",
@@ -94,9 +94,11 @@ func TestDefaultFlags(t *testing.T) {
 }
 
 func TestAddFlags(t *testing.T) {
-	f := pflag.NewFlagSet("addflagstest", pflag.ContinueOnError)
+	fs := pflag.NewFlagSet("addflagstest", pflag.ContinueOnError)
 	s, _ := NewCloudControllerManagerOptions()
-	s.AddFlags(f)
+	for _, f := range s.Flags().FlagSets {
+		fs.AddFlagSet(f)
+	}
 
 	args := []string{
 		"--address=192.168.4.10",
@@ -129,7 +131,7 @@ func TestAddFlags(t *testing.T) {
 		"--secure-port=10001",
 		"--use-service-account-credentials=false",
 	}
-	f.Parse(args)
+	fs.Parse(args)
 
 	expected := &CloudControllerManagerOptions{
 		CloudProvider: &cmoptions.CloudProviderOptions{
@@ -145,7 +147,7 @@ func TestAddFlags(t *testing.T) {
 			KubeAPIQPS:              50.0,
 			KubeAPIBurst:            100,
 			ControllerStartInterval: metav1.Duration{Duration: 2 * time.Minute},
-			LeaderElection: componentconfig.LeaderElectionConfiguration{
+			LeaderElection: apiserverconfig.LeaderElectionConfiguration{
 				ResourceLock:  "configmap",
 				LeaderElect:   false,
 				LeaseDuration: metav1.Duration{Duration: 30 * time.Second},
@@ -154,8 +156,8 @@ func TestAddFlags(t *testing.T) {
 			},
 		},
 		KubeCloudShared: &cmoptions.KubeCloudSharedOptions{
-			Port:                      10253,     // Note: InsecureServingOptions.ApplyTo will write the flag value back into the component config
-			Address:                   "0.0.0.0", // Note: InsecureServingOptions.ApplyTo will write the flag value back into the component config
+			Port:                      10253,     // Note: DeprecatedInsecureServingOptions.ApplyTo will write the flag value back into the component config
+			Address:                   "0.0.0.0", // Note: DeprecatedInsecureServingOptions.ApplyTo will write the flag value back into the component config
 			RouteReconciliationPeriod: metav1.Duration{Duration: 30 * time.Second},
 			NodeMonitorPeriod:         metav1.Duration{Duration: 5 * time.Second},
 			ClusterName:               "k8s",
@@ -176,7 +178,7 @@ func TestAddFlags(t *testing.T) {
 			},
 			HTTP2MaxStreamsPerConnection: 47,
 		},
-		InsecureServing: &cmoptions.InsecureServingOptions{
+		InsecureServing: &apiserveroptions.DeprecatedInsecureServingOptions{
 			BindAddress: net.ParseIP("192.168.4.10"),
 			BindPort:    int(10000),
 			BindNetwork: "tcp",

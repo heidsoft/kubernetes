@@ -248,10 +248,6 @@ func DropDisabledAlphaFields(podSpec *api.PodSpec) {
 		}
 	}
 
-	if !utilfeature.DefaultFeatureGate.Enabled(features.PodShareProcessNamespace) && podSpec.SecurityContext != nil {
-		podSpec.SecurityContext.ShareProcessNamespace = nil
-	}
-
 	for i := range podSpec.Containers {
 		DropDisabledVolumeMountsAlphaFields(podSpec.Containers[i].VolumeMounts)
 	}
@@ -262,6 +258,10 @@ func DropDisabledAlphaFields(podSpec *api.PodSpec) {
 	DropDisabledVolumeDevicesAlphaFields(podSpec)
 
 	DropDisabledRunAsGroupField(podSpec)
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.RuntimeClass) && podSpec.RuntimeClassName != nil {
+		podSpec.RuntimeClassName = nil
+	}
 }
 
 // DropDisabledRunAsGroupField removes disabled fields from PodSpec related

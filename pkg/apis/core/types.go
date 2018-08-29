@@ -35,6 +35,8 @@ const (
 	NamespaceSystem string = "kube-system"
 	// NamespacePublic is the namespace where we place public info (ConfigMaps)
 	NamespacePublic string = "kube-public"
+	// NamespaceNodeLease is the namespace where we place node lease objects (used for node heartbeats)
+	NamespaceNodeLease string = "kube-node-lease"
 	// TerminationMessagePathDefault means the default path to capture the application termination message running in a container
 	TerminationMessagePathDefault string = "/dev/termination-log"
 )
@@ -562,6 +564,8 @@ const (
 	ProtocolTCP Protocol = "TCP"
 	// ProtocolUDP is the UDP protocol.
 	ProtocolUDP Protocol = "UDP"
+	// ProtocolSCTP is the SCTP protocol.
+	ProtocolSCTP Protocol = "SCTP"
 )
 
 // Represents a Persistent Disk resource in Google Compute Engine.
@@ -1568,7 +1572,7 @@ type ContainerPort struct {
 	HostPort int32
 	// Required: This must be a valid port number, 0 < x < 65536.
 	ContainerPort int32
-	// Required: Supports "TCP" and "UDP".
+	// Required: Supports "TCP", "UDP" and "SCTP"
 	// +optional
 	Protocol Protocol
 	// Optional: What host IP to bind the external port to.
@@ -2571,6 +2575,14 @@ type PodSpec struct {
 	// More info: https://github.com/kubernetes/community/blob/master/keps/sig-network/0007-pod-ready%2B%2B.md
 	// +optional
 	ReadinessGates []PodReadinessGate
+	// RuntimeClassName refers to a RuntimeClass object in the node.k8s.io group, which should be used
+	// to run this pod.  If no RuntimeClass resource matches the named class, the pod will not be run.
+	// If unset or empty, the "legacy" RuntimeClass will be used, which is an implicit class with an
+	// empty definition that uses the default runtime handler.
+	// More info: https://github.com/kubernetes/community/blob/master/keps/sig-node/0014-runtime-class.md
+	// This is an alpha feature and may change in the future.
+	// +optional
+	RuntimeClassName *string
 }
 
 // HostAlias holds the mapping between IP and hostnames that will be injected as an entry in the
@@ -2613,7 +2625,7 @@ type PodSecurityContext struct {
 	// in the same pod, and the first process in each container will not be assigned PID 1.
 	// HostPID and ShareProcessNamespace cannot both be set.
 	// Optional: Default to false.
-	// This field is alpha-level and is honored only by servers that enable the PodShareProcessNamespace feature.
+	// This field is beta-level and may be disabled with the PodShareProcessNamespace feature.
 	// +k8s:conversion-gen=false
 	// +optional
 	ShareProcessNamespace *bool
@@ -3165,7 +3177,7 @@ type ServicePort struct {
 	// the 'Name' field in EndpointPort objects.
 	Name string
 
-	// The IP protocol for this port.  Supports "TCP" and "UDP".
+	// The IP protocol for this port.  Supports "TCP", "UDP", and "SCTP".
 	Protocol Protocol
 
 	// The port that will be exposed on the service.

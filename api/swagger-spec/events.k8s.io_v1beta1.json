@@ -286,7 +286,7 @@
      {
       "type": "v1.WatchEvent",
       "method": "GET",
-      "summary": "watch individual changes to a list of Event",
+      "summary": "watch individual changes to a list of Event. deprecated: use the 'watch' parameter with a list operation instead.",
       "nickname": "watchNamespacedEventList",
       "parameters": [
        {
@@ -624,7 +624,7 @@
         "type": "string",
         "paramType": "query",
         "name": "dryRun",
-        "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in a BadRequest response and no further processing of the request.",
+        "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
         "required": false,
         "allowMultiple": false
        },
@@ -675,7 +675,7 @@
      {
       "type": "v1.WatchEvent",
       "method": "GET",
-      "summary": "watch changes to an object of kind Event",
+      "summary": "watch changes to an object of kind Event. deprecated: use the 'watch' parameter with a list operation instead, filtered to a single item with the 'fieldSelector' parameter.",
       "nickname": "watchNamespacedEvent",
       "parameters": [
        {
@@ -897,7 +897,7 @@
      {
       "type": "v1.WatchEvent",
       "method": "GET",
-      "summary": "watch individual changes to a list of Event",
+      "summary": "watch individual changes to a list of Event. deprecated: use the 'watch' parameter with a list operation instead.",
       "nickname": "watchEventListForAllNamespaces",
       "parameters": [
        {
@@ -1507,7 +1507,7 @@
       "items": {
        "type": "string"
       },
-      "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in a BadRequest response and no further processing of the request."
+      "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed"
      }
     }
    },
