@@ -35,13 +35,17 @@ import (
 	"k8s.io/kubernetes/test/e2e/manifest"
 
 	. "github.com/onsi/ginkgo"
+
+	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
+	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	csicrd "k8s.io/csi-api/pkg/crd"
 )
 
 var csiImageVersions = map[string]string{
-	"hostpathplugin":   "v0.2.0",
+	"hostpathplugin":   "canary", // TODO (verult) update tag once new hostpathplugin release is cut
 	"csi-attacher":     "v0.2.0",
 	"csi-provisioner":  "v0.2.1",
-	"driver-registrar": "v0.2.0",
+	"driver-registrar": "v0.3.0",
 }
 
 func csiContainerImage(image string) string {
@@ -239,6 +243,7 @@ func csiHostPathPod(
 					Args: []string{
 						"--v=5",
 						"--csi-address=/csi/csi.sock",
+						"--kubelet-registration-path=/var/lib/kubelet/plugins/csi-hostpath/csi.sock",
 					},
 					Env: []v1.EnvVar{
 						{
@@ -254,6 +259,10 @@ func csiHostPathPod(
 						{
 							Name:      "socket-dir",
 							MountPath: "/csi",
+						},
+						{
+							Name:      "registration-dir",
+							MountPath: "/registration",
 						},
 					},
 				},
@@ -323,6 +332,15 @@ func csiHostPathPod(
 					VolumeSource: v1.VolumeSource{
 						HostPath: &v1.HostPathVolumeSource{
 							Path: "/var/lib/kubelet/plugins/csi-hostpath",
+							Type: &hostPathType,
+						},
+					},
+				},
+				{
+					Name: "registration-dir",
+					VolumeSource: v1.VolumeSource{
+						HostPath: &v1.HostPathVolumeSource{
+							Path: "/var/lib/kubelet/plugins",
 							Type: &hostPathType,
 						},
 					},
@@ -412,4 +430,27 @@ func deployGCEPDCSIDriver(
 	_, err = client.AppsV1().DaemonSets(config.Namespace).Create(nodeds)
 	framework.ExpectNoError(err, "Failed to create DaemonSet: %v", nodeds.Name)
 
+}
+
+func createCSICRDs(c apiextensionsclient.Interface) {
+	By("Creating CSI CRDs")
+	crds := []*apiextensionsv1beta1.CustomResourceDefinition{
+		csicrd.CSIDriverCRD(),
+		csicrd.CSINodeInfoCRD(),
+	}
+
+	for _, crd := range crds {
+		_, err := c.ApiextensionsV1beta1().CustomResourceDefinitions().Create(crd)
+		framework.ExpectNoError(err, "Failed to create CSI CRD %q: %v", crd.Name, err)
+	}
+}
+
+func deleteCSICRDs(c apiextensionsclient.Interface) {
+	By("Deleting CSI CRDs")
+	csiDriverCRDName := csicrd.CSIDriverCRD().Name
+	csiNodeInfoCRDName := csicrd.CSINodeInfoCRD().Name
+	err := c.ApiextensionsV1beta1().CustomResourceDefinitions().Delete(csiDriverCRDName, &metav1.DeleteOptions{})
+	framework.ExpectNoError(err, "Failed to delete CSI CRD %q: %v", csiDriverCRDName, err)
+	err = c.ApiextensionsV1beta1().CustomResourceDefinitions().Delete(csiNodeInfoCRDName, &metav1.DeleteOptions{})
+	framework.ExpectNoError(err, "Failed to delete CSI CRD %q: %v", csiNodeInfoCRDName, err)
 }

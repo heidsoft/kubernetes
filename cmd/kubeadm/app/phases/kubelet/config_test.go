@@ -25,7 +25,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
-	"k8s.io/kubernetes/pkg/kubelet/apis/kubeletconfig"
+	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/util/version"
 )
 
@@ -35,7 +35,7 @@ func TestCreateConfigMap(t *testing.T) {
 	cfg := &kubeadmapi.InitConfiguration{
 		NodeRegistration: kubeadmapi.NodeRegistrationOptions{Name: nodeName},
 		ClusterConfiguration: kubeadmapi.ClusterConfiguration{
-			KubernetesVersion: "v1.11.0",
+			KubernetesVersion: "v1.12.0",
 			ComponentConfigs: kubeadmapi.ComponentConfigs{
 				Kubelet: &kubeletconfig.KubeletConfiguration{},
 			},

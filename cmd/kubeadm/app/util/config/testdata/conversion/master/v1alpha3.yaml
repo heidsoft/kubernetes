@@ -34,7 +34,7 @@ etcd:
     image: ""
 imageRepository: k8s.gcr.io
 kind: ClusterConfiguration
-kubernetesVersion: v1.10.2
+kubernetesVersion: v1.11.2
 networking:
   dnsDomain: cluster.local
   podSubnet: ""
@@ -107,6 +107,7 @@ containerLogMaxFiles: 5
 containerLogMaxSize: 10Mi
 contentType: application/vnd.kubernetes.protobuf
 cpuCFSQuota: true
+cpuCFSQuotaPeriod: 0s
 cpuManagerPolicy: none
 cpuManagerReconcilePeriod: 10s
 enableControllerAttachDetach: true

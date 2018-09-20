@@ -25,6 +25,8 @@ import (
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmscheme "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/scheme"
 	kubeadmapiv1alpha3 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1alpha3"
+	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/options"
+	certscmdphase "k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/certs"
 	cmdutil "k8s.io/kubernetes/cmd/kubeadm/app/cmd/util"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	certsphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/certs"
@@ -119,7 +121,10 @@ func getCertsSubCommands(defaultKubernetesVersion string) []*cobra.Command {
 	}
 	addFlags(saCmd, &cfgPath, cfg, false)
 
-	subCmds := []*cobra.Command{allCmd, saCmd}
+	// "renew" command
+	renewCmd := certscmdphase.NewCmdCertsRenewal()
+
+	subCmds := []*cobra.Command{allCmd, saCmd, renewCmd}
 
 	certTree, err := certsphase.GetDefaultCertList().AsMap().CertTree()
 	kubeadmutil.CheckErr(err)
@@ -184,8 +189,8 @@ func getSANDescription(certSpec *certsphase.KubeadmCert) string {
 }
 
 func addFlags(cmd *cobra.Command, cfgPath *string, cfg *kubeadmapiv1alpha3.InitConfiguration, addAPIFlags bool) {
-	cmd.Flags().StringVar(cfgPath, "config", *cfgPath, "Path to kubeadm config file. WARNING: Usage of a configuration file is experimental")
-	cmd.Flags().StringVar(&cfg.CertificatesDir, "cert-dir", cfg.CertificatesDir, "The path where to save the certificates")
+	options.AddCertificateDirFlag(cmd.Flags(), &cfg.CertificatesDir)
+	options.AddConfigFlag(cmd.Flags(), cfgPath)
 	if addAPIFlags {
 		cmd.Flags().StringVar(&cfg.Networking.DNSDomain, "service-dns-domain", cfg.Networking.DNSDomain, "Alternative domain for services, to use for the API server serving cert")
 		cmd.Flags().StringVar(&cfg.Networking.ServiceSubnet, "service-cidr", cfg.Networking.ServiceSubnet, "Alternative range of IP address for service VIPs, from which derives the internal API server VIP that will be added to the API Server serving cert")
@@ -221,6 +226,8 @@ func makeCommandForCert(cert *certsphase.KubeadmCert, caCert *certsphase.Kubeadm
 
 	certCmd.Run = func(cmd *cobra.Command, args []string) {
 		internalcfg, err := configutil.ConfigFileAndDefaultsToInternalConfig(*cfgPath, cfg)
+		kubeadmutil.CheckErr(err)
+		err = configutil.VerifyAPIServerBindAddress(internalcfg.APIEndpoint.AdvertiseAddress)
 		kubeadmutil.CheckErr(err)
 
 		err = certsphase.CreateCertAndKeyFilesWithCA(cert, caCert, internalcfg)

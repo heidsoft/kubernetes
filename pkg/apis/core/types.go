@@ -413,6 +413,16 @@ type PersistentVolumeClaimSpec struct {
 	// This is an alpha feature and may change in the future.
 	// +optional
 	VolumeMode *PersistentVolumeMode
+	// This field requires the VolumeSnapshotDataSource alpha feature gate to be
+	// enabled and currently VolumeSnapshot is the only supported data source.
+	// If the provisioner can support VolumeSnapshot data source, it will create
+	// a new volume and data will be restored to the volume at the same time.
+	// If the provisioner does not support VolumeSnapshot data source, volume will
+	// not be created and the failure will be reported as an event.
+	// In the future, we plan to support more data source types and the behavior
+	// of the provisioner may change.
+	// +optional
+	DataSource *TypedLocalObjectReference
 }
 
 type PersistentVolumeClaimConditionType string
@@ -1503,10 +1513,14 @@ type KeyToPath struct {
 type LocalVolumeSource struct {
 	// The full path to the volume on the node.
 	// It can be either a directory or block device (disk, partition, ...).
-	// Directories can be represented only by PersistentVolume with VolumeMode=Filesystem.
-	// Block devices can be represented only by VolumeMode=Block, which also requires the
-	// BlockVolume alpha feature gate to be enabled.
 	Path string
+
+	// Filesystem type to mount.
+	// It applies only when the Path is a block device.
+	// Must be a filesystem type supported by the host operating system.
+	// Ex. "ext4", "xfs", "ntfs". The default value is to auto-select a fileystem if unspecified.
+	// +optional
+	FSType *string
 }
 
 // Represents storage that is managed by an external CSI volume driver (Beta feature)
@@ -3960,6 +3974,19 @@ type LocalObjectReference struct {
 	Name string
 }
 
+// TypedLocalObjectReference contains enough information to let you locate the typed referenced object inside the same namespace.
+type TypedLocalObjectReference struct {
+	// APIGroup is the group for the resource being referenced.
+	// If APIGroup is not specified, the specified Kind must be in the core API group.
+	// For any other third-party types, APIGroup is required.
+	// +optional
+	APIGroup *string
+	// Kind is the type of resource being referenced
+	Kind string
+	// Name is the name of resource being referenced
+	Name string
+}
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 type SerializedReference struct {
@@ -4596,7 +4623,26 @@ type SecurityContext struct {
 	// the no_new_privs flag will be set on the container process.
 	// +optional
 	AllowPrivilegeEscalation *bool
+	// ProcMount denotes the type of proc mount to use for the containers.
+	// The default is DefaultProcMount which uses the container runtime defaults for
+	// readonly paths and masked paths.
+	// +optional
+	ProcMount *ProcMountType
 }
+
+type ProcMountType string
+
+const (
+	// DefaultProcMount uses the container runtime defaults for readonly and masked
+	// paths for /proc.  Most container runtimes mask certain paths in /proc to avoid
+	// accidental security exposure of special devices or information.
+	DefaultProcMount ProcMountType = "Default"
+
+	// UnmaskedProcMount bypasses the default masking behavior of the container
+	// runtime and ensures the newly created /proc the container stays intact with
+	// no modifications.
+	UnmaskedProcMount ProcMountType = "Unmasked"
+)
 
 // SELinuxOptions are the labels to be applied to the container.
 type SELinuxOptions struct {

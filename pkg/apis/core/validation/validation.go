@@ -36,6 +36,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	unversionedvalidation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -1501,6 +1502,10 @@ var supportedReclaimPolicy = sets.NewString(string(core.PersistentVolumeReclaimD
 
 var supportedVolumeModes = sets.NewString(string(core.PersistentVolumeBlock), string(core.PersistentVolumeFilesystem))
 
+var supportedDataSourceAPIGroupKinds = map[schema.GroupKind]bool{
+	{Group: "snapshot.storage.k8s.io", Kind: "VolumeSnapshot"}: true,
+}
+
 func ValidatePersistentVolume(pv *core.PersistentVolume) field.ErrorList {
 	metaPath := field.NewPath("metadata")
 	allErrs := ValidateObjectMeta(&pv.ObjectMeta, false, ValidatePersistentVolumeName, metaPath)
@@ -1824,6 +1829,27 @@ func ValidatePersistentVolumeClaimSpec(spec *core.PersistentVolumeClaimSpec, fld
 	} else if spec.VolumeMode != nil && !supportedVolumeModes.Has(string(*spec.VolumeMode)) {
 		allErrs = append(allErrs, field.NotSupported(fldPath.Child("volumeMode"), *spec.VolumeMode, supportedVolumeModes.List()))
 	}
+
+	if spec.DataSource != nil && !utilfeature.DefaultFeatureGate.Enabled(features.VolumeSnapshotDataSource) {
+		allErrs = append(allErrs, field.Forbidden(fldPath.Child("dataSource"), "VolumeSnapshotDataSource is disabled by feature-gate"))
+	} else if spec.DataSource != nil {
+		if len(spec.DataSource.Name) == 0 {
+			allErrs = append(allErrs, field.Required(fldPath.Child("dataSource", "name"), ""))
+		}
+
+		groupKind := schema.GroupKind{Group: "", Kind: spec.DataSource.Kind}
+		if spec.DataSource.APIGroup != nil {
+			groupKind.Group = string(*spec.DataSource.APIGroup)
+		}
+		groupKindList := make([]string, 0, len(supportedDataSourceAPIGroupKinds))
+		for grp := range supportedDataSourceAPIGroupKinds {
+			groupKindList = append(groupKindList, grp.String())
+		}
+		if !supportedDataSourceAPIGroupKinds[groupKind] {
+			allErrs = append(allErrs, field.NotSupported(fldPath.Child("dataSource"), groupKind.String(), groupKindList))
+		}
+	}
+
 	return allErrs
 }
 
@@ -3137,7 +3163,7 @@ func ValidateTopologySelectorTerm(term core.TopologySelectorTerm, fldPath *field
 	exprMap := make(map[string]sets.String)
 	exprPath := fldPath.Child("matchLabelExpressions")
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.DynamicProvisioningScheduling) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.VolumeScheduling) {
 		// Allow empty MatchLabelExpressions, in case this field becomes optional in the future.
 
 		for i, req := range term.MatchLabelExpressions {
@@ -3152,7 +3178,7 @@ func ValidateTopologySelectorTerm(term core.TopologySelectorTerm, fldPath *field
 			exprMap[req.Key] = valueSet
 		}
 	} else if len(term.MatchLabelExpressions) != 0 {
-		allErrs = append(allErrs, field.Forbidden(fldPath, "field is disabled by feature-gate DynamicProvisioningScheduling"))
+		allErrs = append(allErrs, field.Forbidden(fldPath, "field is disabled by feature-gate VolumeScheduling"))
 	}
 
 	return exprMap, allErrs

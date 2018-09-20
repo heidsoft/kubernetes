@@ -99,17 +99,21 @@ func TestCompileManifests(t *testing.T) {
 		{
 			manifest: KubeProxyConfigMap19,
 			data: struct {
-				MasterEndpoint, ProxyConfig string
+				MasterEndpoint, ProxyConfig, ProxyConfigMap, ProxyConfigMapKey string
 			}{
-				MasterEndpoint: "foo",
-				ProxyConfig:    "  bindAddress: 0.0.0.0\n  clusterCIDR: 192.168.1.1\n  enableProfiling: false",
+				MasterEndpoint:    "foo",
+				ProxyConfig:       "  bindAddress: 0.0.0.0\n  clusterCIDR: 192.168.1.1\n  enableProfiling: false",
+				ProxyConfigMap:    "bar",
+				ProxyConfigMapKey: "baz",
 			},
 			expected: true,
 		},
 		{
 			manifest: KubeProxyDaemonSet19,
-			data: struct{ Image string }{
-				Image: "foo",
+			data: struct{ Image, ProxyConfigMap, ProxyConfigMapKey string }{
+				Image:             "foo",
+				ProxyConfigMap:    "bar",
+				ProxyConfigMapKey: "baz",
 			},
 			expected: true,
 		},
@@ -179,7 +183,7 @@ func TestEnsureProxyAddon(t *testing.T) {
 					PodSubnet: "5.6.7.8/24",
 				},
 				ImageRepository:   "someRepo",
-				KubernetesVersion: "v1.10.0",
+				KubernetesVersion: "v1.11.0",
 			},
 		}
 
